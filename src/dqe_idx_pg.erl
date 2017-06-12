@@ -45,14 +45,16 @@ init() ->
                            {ok, P} = application:get_env(dqe_idx_pg, port),
                            {H, P}
                    end,
-    pgapp:connect([{host, Host}, {port, Port} | Opts1]),
+    pgapp:connect(default, [{host, Host}, {port, Port} | Opts1]),
+    %% TODO: connect to alternate pools
     sql_migration:run(dqe_idx_pg).
 
 lookup(Query, Start, Finish, Opts) ->
     Grace = proplists:get_value(grace, Opts, ?GRACE),
     {ok, Q, Vs} = query_builder:lookup_query(
                     Query, Start - Grace, Finish + Grace, []),
-    {ok, Rows} = execute({select, "lookup/1", Q, Vs}),
+    Collection = lookup_collection(Query),
+    {ok, Rows} = execute({select, "lookup/1", Collection, Q, Vs}),
     Rows1 = [translate_row(Row, Start, Finish, Grace) || Row <- Rows],
     {ok, Rows1}.
 
@@ -60,7 +62,8 @@ lookup(Query, Start, Finish, Groupings, Opts) ->
     Grace = proplists:get_value(grace, Opts, ?GRACE),
     {ok, Q, Vs} = query_builder:lookup_query(
                     Query, Start - Grace, Finish + Grace, Groupings),
-    {ok, Rows} = execute({select, "lookup/2", Q, Vs}),
+    Collection = lookup_collection(Query),
+    {ok, Rows} = execute({select, "lookup/2", Collection, Q, Vs}),
     Rows1 = [{translate_row({Bucket, Key, S, F}, Start, Finish, Grace),
               get_values(Groupings, Dimensions)} ||
                 {Bucket, Key, S, F, Dimensions} <- Rows],
@@ -68,62 +71,64 @@ lookup(Query, Start, Finish, Groupings, Opts) ->
 
 lookup_tags(Query) ->
     {ok, Q, Vs} = query_builder:lookup_tags_query(Query),
-    {ok, Rows} = execute({select, "lookup_tags/1", Q, Vs}),
+    Collection = lookup_collection(Query),
+    {ok, Rows} = execute({select, "lookup_tags/1", Collection, Q, Vs}),
     R = [dqe_idx_pg_utils:kvpair_to_tag(KV) || KV <- Rows],
     {ok, R}.
 
 collections() ->
     {ok, Q, Vs} = query_builder:collections_query(),
+    %% TODO: run across all known pools and combine results
     {ok, Rows} = execute({select, "collections/0", Q, Vs}),
     {ok, strip_tpl(Rows)}.
 
 metrics(Collection) ->
     {ok, Q, Vs} = query_builder:metrics_query(Collection),
-    {ok, Rows} = execute({select, "metrics/1", Q, Vs}),
+    {ok, Rows} = execute({select, "metrics/1", Collection, Q, Vs}),
     R = [M || {M} <- Rows],
     {ok, R}.
 
 metrics(Collection, Tags) ->
     {ok, Q, Vs} = query_builder:metrics_query(Collection, Tags),
-    {ok, Rows} = execute({select, "metrics/1", Q, Vs}),
+    {ok, Rows} = execute({select, "metrics/1", Collection, Q, Vs}),
     R = [M || {M} <- Rows],
     {ok, R}.
 
 metrics(Collection, Prefix, Depth) ->
     {ok, Q, Vs} = query_builder:metrics_query(Collection, Prefix, Depth),
-    {ok, Rows} = execute({select, "metrics/3", Q, Vs}),
+    {ok, Rows} = execute({select, "metrics/3", Collection, Q, Vs}),
     R = [M || {M} <- Rows],
     {ok, R}.
 
 namespaces(Collection) ->
     {ok, Q, Vs} = query_builder:namespaces_query(Collection),
-    {ok, Rows} = execute({select, "namespaces/1", Q, Vs}),
+    {ok, Rows} = execute({select, "namespaces/1", Collection, Q, Vs}),
     {ok, decode_ns_rows(Rows)}.
 
 namespaces(Collection, Metric) ->
     {ok, Q, Vs} = query_builder:namespaces_query(Collection, Metric),
-    {ok, Rows} = execute({select, "namespaces/2", Q, Vs}),
+    {ok, Rows} = execute({select, "namespaces/2", Collection, Q, Vs}),
     {ok, decode_ns_rows(Rows)}.
 
 tags(Collection, Namespace) ->
     {ok, Q, Vs} = query_builder:tags_query(Collection, Namespace),
-    {ok, Rows} = execute({select, "tags/2", Q, Vs}),
+    {ok, Rows} = execute({select, "tags/2", Collection, Q, Vs}),
     {ok, strip_tpl(Rows)}.
 
 tags(Collection, Metric, Namespace) ->
     {ok, Q, Vs} = query_builder:tags_query(Collection, Metric, Namespace),
-    {ok, Rows} = execute({select, "tags/3", Q, Vs}),
+    {ok, Rows} = execute({select, "tags/3", Collection, Q, Vs}),
     {ok, strip_tpl(Rows)}.
 
 values(Collection, Namespace, Tag) ->
     {ok, Q, Vs} = query_builder:values_query(Collection, Namespace, Tag),
-    {ok, Rows} = execute({select, "values/3", Q, Vs}),
+    {ok, Rows} = execute({select, "values/3", Collection, Q, Vs}),
     {ok, strip_tpl(Rows)}.
 
 values(Collection, Metric, Namespace, Tag) ->
     {ok, Q, Vs} = query_builder:values_query(Collection, Metric,
                                              Namespace, Tag),
-    {ok, Rows} = execute({select, "values/4", Q, Vs}),
+    {ok, Rows} = execute({select, "values/4", Collection, Q, Vs}),
     {ok, strip_tpl(Rows)}.
 
 expand(Bucket, []) when is_binary(Bucket) ->
@@ -133,6 +138,7 @@ expand(Bucket, Globs) when
       is_binary(Bucket),
       is_list(Globs) ->
     {ok, Q, Vs} = query_builder:glob_query(Bucket, Globs),
+    % TODO: run across all known pools and combine results
     {ok, Rows} = execute({select, "expand/2", Q, Vs}),
     Metrics = [M || {M} <- Rows],
     {ok, {Bucket, Metrics}}.
@@ -140,6 +146,8 @@ expand(Bucket, Globs) when
 
 touch(Data) ->
     {ok, Q, Vs} = command_builder:touch(Data),
+    %% TODO: this is bucket based as well, so most probably we will need to
+    %% spread it to all pools and consider that some may not have that key
     case execute({command, "touch/1", Q, Vs}) of
         {ok, 0, []} ->
             ok;
@@ -167,7 +175,7 @@ add(Collection, Metric, Bucket, Key, Timestamp) ->
 add(Collection, Metric, Bucket, Key, Timestamp, Tags) ->
     {ok, Q, Vs} = command_builder:add_metric(
                     Collection, Metric, Bucket, Key, Timestamp, Tags),
-    case execute({command, "add/6", Q, Vs}) of
+    case execute({command, "add/6", Collection, Q, Vs}) of
         {ok, 0, []} ->
             ok;
         {ok, _Count, [{Dims}]} ->
@@ -184,7 +192,7 @@ add(Collection, Metric, Bucket, Key, Timestamp, Tags) ->
 update(Collection, Metric, Bucket, Key, NVs) ->
     {ok, Q, Vs} = command_builder:update_tags(
                     Collection, Metric, Bucket, Key, NVs),
-    case execute({command, "update/5", Q, Vs}) of
+    case execute({command, "update/5", Collection, Q, Vs}) of
         {ok, 0, []} ->
             ok;
         {ok, _Count, [{Dims}]} ->
@@ -200,7 +208,7 @@ update(Collection, Metric, Bucket, Key, NVs) ->
 delete(Collection, Metric, Bucket, Key) ->
     {ok, Q, Vs} = command_builder:delete_metric(Collection, Metric,
                                                 Bucket, Key),
-    case execute({command, "delete/4", Q, Vs}) of
+    case execute({command, "delete/4", Collection, Q, Vs}) of
         {ok, _Count, _Rows} ->
             ok;
         E ->
@@ -215,7 +223,7 @@ delete(Collection, Metric, Bucket, Key) ->
 delete(Collection, Metric, Bucket, Key, Tags) ->
     {ok, Q, Vs} = command_builder:delete_tags(
                     Collection, Metric, Bucket, Key, Tags),
-    case execute({command, "delete/5", Q, Vs}) of
+    case execute({command, "delete/5", Collection, Q, Vs}) of
         {ok, _Count, _Rows} ->
             ok;
         E ->
@@ -235,9 +243,10 @@ strip_tpl(L) ->
 decode_ns_rows(Rows) ->
     [dqe_idx_pg_utils:decode_ns(E) || {E} <- Rows].
 
-execute({select, Name, Q, Vs}) ->
+execute({select, Name, Collection, Q, Vs}) ->
     T0 = erlang:system_time(nano_seconds),
-    case pgapp:equery(Q, Vs, timeout()) of
+    Pool = pg_pool(Collection),
+    case pgapp:equery(Pool, Q, Vs, timeout()) of
         {ok, _Cols, Rows} ->
             lager:debug("[dqe_idx:pg:~p] PG Query took ~pms: ~s <- ~p",
                         [Name, tdelta(T0), Q, Vs]),
@@ -245,9 +254,10 @@ execute({select, Name, Q, Vs}) ->
         E ->
             report_error(Name, Q, Vs, T0, E)
     end;
-execute({command, Name, Q, Vs}) ->
+execute({command, Name, Collection, Q, Vs}) ->
     T0 = erlang:system_time(nano_seconds),
-    case pgapp:equery(Q, Vs, timeout()) of
+    Pool = pg_pool(Collection),
+    case pgapp:equery(Pool, Q, Vs, timeout()) of
         {ok, Count} ->
             lager:debug("[dqe_idx:pg:~p] PG Query took ~pms: ~s <- ~p",
                         [Name, tdelta(T0), Q, Vs]),
@@ -314,3 +324,14 @@ translate_row({B, K, StartD, FinishD}, Start, Finish, Grace) ->
                   [{Start, StartMSG -1, null} | Cs1]
           end,
     {B, K, Cs2}.
+
+lookup_collection({in, Collection, _Metric}) ->
+    Collection;
+lookup_collection({in, Collection, _Metric, _Where}) ->
+    Collection.
+
+%% TODO: implement alternate pools selection based on some config
+%%pg_pool(<<"">>) ->
+%%    
+pg_pool(_Collection) ->
+    default.

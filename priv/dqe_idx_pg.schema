@@ -2,43 +2,43 @@
 
 %% @doc The TCP endpoint for the backend server. Doesn't support hostnames.
 %% This setting overwrites backend_host and backend_port connections.
-{mapping, "idx.pg.backend", "dqe_idx_pg.server",
+{mapping, "idx.pg.$pool.backend", "dqe_idx_pg.pools",
   [{datatype, ip}]}.
 
 %% @doc The TCP hostname or IP for the backend server.
 %% Set this or backend_server.
-{mapping, "idx.pg.backend_host", "dqe_idx_pg.host",
+{mapping, "idx.pg.$pool.backend_host", "dqe_idx_pg.pools",
  [{default, "127.0.0.1"},
   {datatype, string}]}.
 
 %% @doc The TCP port for the backend server
 %% Set this or backend_server.
-{mapping, "idx.pg.backend_port", "dqe_idx_pg.port",
+{mapping, "idx.pg.$pool.backend_port", "dqe_idx_pg.pools",
  [{default, 5432},
   {datatype, integer}]}.
 
 %% @doc Initial number of conneciton pool workers
-{mapping, "idx.pg.size", "dqe_idx_pg.size",
+{mapping, "idx.pg.$pool.size", "dqe_idx_pg.pools",
  [{default, 20},
   {datatype, integer}]}.
 
 %% @doc Number of overflow connections - be careful with those!
-{mapping, "idx.pg.max_overflow", "dqe_idx_pg.max_overflow",
+{mapping, "idx.pg.$pool.max_overflow", "dqe_idx_pg.pools",
  [{default, 0},
   {datatype, integer}]}.
 
 %% @doc Initial number of conneciton pool workers
-{mapping, "idx.pg.database", "dqe_idx_pg.database",
+{mapping, "idx.pg.$pool.database", "dqe_idx_pg.pools",
  [{default, "metric_metadata"},
   {datatype, string}]}.
 
 %% @doc Username for the conection
-{mapping, "idx.pg.username", "dqe_idx_pg.username",
+{mapping, "idx.pg.$pool.username", "dqe_idx_pg.pools",
  [{default, "ddb"},
   {datatype, string}]}.
 
 %% @doc Password for the conection
-{mapping, "idx.pg.password", "dqe_idx_pg.password",
+{mapping, "idx.pg.$pool.password", "dqe_idx_pg.pools",
  [{default, "ddb"},
   {datatype, string}]}.
 
@@ -46,3 +46,23 @@
 {mapping, "idx.pg.timeout", "dqe_idx_pg.timeout",
  [{default, "5s"},
   {datatype, {duration, ms}}]}.
+
+%% {translation,
+%%  "dqe_idx_pg.pools",
+%%  fun(Conf) ->
+%%          %% TODO: work out how to to translate this now
+%%          %% It is best to unit testing in:
+%%          %%     https://github.com/basho/cuttlefish/wiki/Unit-Testing-A-Schema
+%%          io:format("Trying out this funny config: ~p", [Conf]),
+%%          UserList = lists:filter(
+%%                       fun({K, _V}) ->
+%%                               cuttlefish_variable:is_fuzzy_match(K, string:tokens("riak_control.user.$username.password", "."))
+%%                       end,
+%%                       Conf),
+%%          Users = [ {Username, Password} || {[_, _, Username, _], Password} <- UserList ],
+%%          case Users of
+%%              [] ->
+%%                  throw(unset);
+%%              _ -> Users
+%%          end
+%%  end}.
