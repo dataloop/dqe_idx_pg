@@ -3,6 +3,13 @@
 
 -include_lib("dqe_idx_pg/include/dqe_idx_pg.hrl").
 
+-ifdef(TEST).
+-include_lib("eunit/include/eunit.hrl").
+-else.
+-compile([{nowarn_unused_function, [{defaut_pool_config_test,0},
+                                    {extra_pool_config_test,0}]}]).
+-endif.
+
 %% API exports
 -export([
          init/0,
@@ -21,6 +28,7 @@
 -type not_found() :: {'error', not_found}.
 -type sql_stmt() :: {ok, iolist(), [term()]}.
 
+-define(POOL_MAP_TAB, dqe_idx_pg_poolmap).
 
 -define(TIMEOUT, 5 * 1000).
 %% 1 hour in milliseconds
@@ -34,19 +42,29 @@
 %%====================================================================
 
 init() ->
+    ets:new(?POOL_MAP_TAB, [named_table]),
+    {ok, PoolConfigs} = application:get_env(dqe_idx_pg, pool),
+    [init_pool(Pool, Config) || {Pool, Config} <- PoolConfigs],
+    ok.
+
+init_pool(Pool, Config) ->
     Opts = [size, max_overflow, database, username, password],
-    Opts1 = [{O, application:get_env(dqe_idx_pg, O, undefined)}
-             || O <- Opts],
-    {Host, Port} = case application:get_env(dqe_idx_pg, server) of
-                       {ok, {H, P}} ->
+    Opts1 = [{O, proplists:get_value(dqe_idx_pg, Config, undefined)}
+         || O <- Opts],
+    {Host, Port} = case proplists:get_value(server, Config) of
+                       {H, P} ->
                            {H, P};
                        _ ->
-                           {ok, H} = application:get_env(dqe_idx_pg, host),
-                           {ok, P} = application:get_env(dqe_idx_pg, port),
+                           {ok, H} = proplists:get_value(host, Config),
+                           {ok, P} = proplists:get_value(port, Config),
                            {H, P}
                    end,
-    pgapp:connect(default, [{host, Host}, {port, Port} | Opts1]),
-    %% TODO: connect to alternate pools
+    pgapp:connect(Pool, [{host, Host}, {port, Port} | Opts1]),
+
+    CollectionsProp = proplists:get_value(collections, Config, ""),
+    Collections = string:tokenize(CollectionsProp, ", "),
+    ets:insert(?POOL_MAP_TAB, [{C, Pool} || C <- Collections]),
+
     sql_migration:run(dqe_idx_pg).
 
 lookup(Query, Start, Finish, Opts) ->
@@ -330,8 +348,39 @@ lookup_collection({in, Collection, _Metric}) ->
 lookup_collection({in, Collection, _Metric, _Where}) ->
     Collection.
 
-%% TODO: implement alternate pools selection based on some config
-%%pg_pool(<<"">>) ->
-%%    
-pg_pool(_Collection) ->
-    default.
+pg_pool(Collection) ->
+    case ets:lookup(?POOL_MAP_TAB, Collection) of
+        [{_Col, Pool}| _] ->
+            Pool;
+        _ ->
+            default
+    end.
+
+defaut_pool_config_test() ->
+    Conf = [{["idx", "pg", "backend"], "127.0.0.2:5432"}],
+    Config = cuttlefish_unit:generate_config("priv/dqe_idx_pg.schema", Conf),
+    cuttlefish_unit:assert_valid_config(Config),
+    cuttlefish_unit:assert_config(Config, "dqe_idx_pg.pool.default.server",
+                                  {"127.0.0.2", 5432}),
+    cuttlefish_unit:assert_config(Config, "dqe_idx_pg.pool.default.database",
+                                  "metric_metadata").
+
+extra_pool_config_test() ->
+    Conf = [{["idx", "pg", "extra1", "backend"], "127.0.0.2:5432"},
+            {["idx", "pg", "extra1", "collections"], "col1, col2"},
+            {["idx", "pg", "extra2", "database"], "extra_db"},
+            {["idx", "pg", "extra2", "collections"], "col3"}],
+    Config = cuttlefish_unit:generate_config("priv/dqe_idx_pg.schema", Conf),
+    %%cuttlefish_unit:assert_valid_config(Config),
+    cuttlefish_unit:assert_config(Config, "dqe_idx_pg.pool.default.host",
+                                  "127.0.0.1"),
+    cuttlefish_unit:assert_config(Config, "dqe_idx_pg.pool.default.port",
+                                  5432),
+    cuttlefish_unit:assert_config(Config, "dqe_idx_pg.pool.extra1.server",
+                                  {"127.0.0.2", 5432}),
+    cuttlefish_unit:assert_config(Config, "dqe_idx_pg.pool.extra1.database",
+                                  "metric_metadata"),
+    cuttlefish_unit:assert_config(Config, "dqe_idx_pg.pool.extra2.server",
+                                  {"127.0.0.1", 5432}),
+    cuttlefish_unit:assert_config(Config, "dqe_idx_pg.pool.extra2.database",
+                                  "extra_db").
