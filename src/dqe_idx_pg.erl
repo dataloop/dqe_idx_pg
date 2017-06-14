@@ -3,11 +3,12 @@
 
 -include_lib("dqe_idx_pg/include/dqe_idx_pg.hrl").
 
--ifdef(TEST).
+-ifdef(EUNIT).
 -include_lib("eunit/include/eunit.hrl").
 -else.
 -compile([{nowarn_unused_function, [{defaut_pool_config_test,0},
-                                    {extra_pool_config_test,0}]}]).
+                                    {extra_pool_config_test,0},
+                                    {extra_pool_init_test,0}]}]).
 -endif.
 
 %% API exports
@@ -55,17 +56,18 @@ init_pool(Pool, Config) ->
                        {H, P} ->
                            {H, P};
                        _ ->
-                           {ok, H} = proplists:get_value(host, Config),
-                           {ok, P} = proplists:get_value(port, Config),
+                           H = proplists:get_value(host, Config),
+                           P = proplists:get_value(port, Config),
                            {H, P}
                    end,
     pgapp:connect(Pool, [{host, Host}, {port, Port} | Opts1]),
 
     CollectionsProp = proplists:get_value(collections, Config, ""),
-    Collections = string:tokenize(CollectionsProp, ", "),
-    ets:insert(?POOL_MAP_TAB, [{C, Pool} || C <- Collections]),
+    Collections = string:tokens(CollectionsProp, ", "),
+    Rows = [{list_to_binary(C), Pool} || C <- Collections],
+    ets:insert(?POOL_MAP_TAB, Rows),
 
-    sql_migration:run(dqe_idx_pg).
+    sql_migration:run(dqe_idx_pg, Pool).
 
 lookup(Query, Start, Finish, Opts) ->
     Grace = proplists:get_value(grace, Opts, ?GRACE),
@@ -96,7 +98,6 @@ lookup_tags(Query) ->
 
 collections() ->
     {ok, Q, Vs} = query_builder:collections_query(),
-    %% TODO: run across all known pools and combine results
     {ok, Rows} = execute({select, "collections/0", Q, Vs}),
     {ok, strip_tpl(Rows)}.
 
@@ -156,7 +157,6 @@ expand(Bucket, Globs) when
       is_binary(Bucket),
       is_list(Globs) ->
     {ok, Q, Vs} = query_builder:glob_query(Bucket, Globs),
-    % TODO: run across all known pools and combine results
     {ok, Rows} = execute({select, "expand/2", Q, Vs}),
     Metrics = [M || {M} <- Rows],
     {ok, {Bucket, Metrics}}.
@@ -164,8 +164,6 @@ expand(Bucket, Globs) when
 
 touch(Data) ->
     {ok, Q, Vs} = command_builder:touch(Data),
-    %% TODO: this is bucket based as well, so most probably we will need to
-    %% spread it to all pools and consider that some may not have that key
     case execute({command, "touch/1", Q, Vs}) of
         {ok, 0, []} ->
             ok;
@@ -261,9 +259,31 @@ strip_tpl(L) ->
 decode_ns_rows(Rows) ->
     [dqe_idx_pg_utils:decode_ns(E) || {E} <- Rows].
 
+execute({select, Name, Q, Vs}) ->
+    lists:foldl(fun (Pool, {ok, AccRows}) ->
+                    case execute({select, Name, Pool, Q, Vs}) of
+                        {ok, Rows} ->
+                            {ok, AccRows ++ Rows};
+                        Err ->
+                            Err
+                    end;
+                    (_, Err) ->
+                        Err
+                end, {ok, []}, all_pg_pools());
+execute({command, Name, Q, Vs}) ->
+    lists:foldl(fun (Pool, {ok, AccCount, AccRows}) ->
+                    case execute({command, Name, Pool, Q, Vs}) of
+                        {ok, Count, Rows} ->
+                            {ok, AccCount + Count, AccRows ++ Rows};
+                        Err ->
+                            Err
+                    end;
+                    (_, Err) ->
+                        Err
+                end, {ok, 0, []}, all_pg_pools());
 execute({select, Name, PoolOrCollection, Q, Vs}) ->
     T0 = erlang:system_time(nano_seconds),
-    Pool = pg_pool(Collection),
+    Pool = pg_pool(PoolOrCollection),
     case pgapp:equery(Pool, Q, Vs, timeout()) of
         {ok, _Cols, Rows} ->
             lager:debug("[dqe_idx:pg:~p] PG Query took ~pms: ~s <- ~p",
@@ -274,7 +294,7 @@ execute({select, Name, PoolOrCollection, Q, Vs}) ->
     end;
 execute({command, Name, PoolOrCollection, Q, Vs}) ->
     T0 = erlang:system_time(nano_seconds),
-    Pool = pg_pool(Collection),
+    Pool = pg_pool(PoolOrCollection),
     case pgapp:equery(Pool, Q, Vs, timeout()) of
         {ok, Count} ->
             lager:debug("[dqe_idx:pg:~p] PG Query took ~pms: ~s <- ~p",
@@ -287,29 +307,6 @@ execute({command, Name, PoolOrCollection, Q, Vs}) ->
         E ->
             report_error(Name, Q, Vs, T0, E)
     end.
-
-execute_all({select, Name, Q, Vs}) ->
-    lists:foldl(fun (Pool, {ok, AccRows}) ->
-                    case execute({select, Name, Pool, Q, Vs}) of
-                        {ok, Rows} ->
-                            {ok, AccRows ++ Rows};
-                        Err ->
-                            Err
-                    end;
-                    (_, Err) ->
-                        Err
-                end, {ok, []}, all_pg_pools());
-execute_all({command, Name, Q, Vs}) ->
-    lists:foldl(fun (Pool, {ok, AccCount, AccRows}) ->
-                    case execute({command, Name, Pool, Q, Vs}) of
-                        {ok, Count, Rows} ->
-                            {ok, AccCount + Count, AccRows ++ Rows};
-                        Err ->
-                            Err
-                    end;
-                    (_, Err) ->
-                        Err
-                end, {ok, 0, []}, all_pg_pools()).
 
 report_error(Name, Q, Vs, T0, E) ->
     lager:info("[dqe_idx:pg:~p] PG Query failed after ~pms: ~s <- ~p:"
@@ -377,13 +374,18 @@ pg_pool(Collection) ->
     case ets:lookup(?POOL_MAP_TAB, Collection) of
         [{_Col, Pool}| _] ->
             Pool;
-        _ ->
+        [] ->
             default
     end.
 
 all_pg_pools() ->
-    %TODO: implement me
-    [].
+    Pools = [P || [P] <- ets:match(?POOL_MAP_TAB, {'_', '$1'})],
+    Pools1 = [default | Pools],
+    lists:usort(Pools1).
+
+%%====================================================================
+%% test functions
+%%====================================================================
 
 defaut_pool_config_test() ->
     Conf = [{["idx", "pg", "backend"], "127.0.0.2:5432"}],
@@ -400,7 +402,7 @@ extra_pool_config_test() ->
             {["idx", "pg", "extra2", "database"], "extra_db"},
             {["idx", "pg", "extra2", "collections"], "col3"}],
     Config = cuttlefish_unit:generate_config("priv/dqe_idx_pg.schema", Conf),
-    %%cuttlefish_unit:assert_valid_config(Config),
+    cuttlefish_unit:assert_valid_config(Config),
     cuttlefish_unit:assert_config(Config, "dqe_idx_pg.pool.default.host",
                                   "127.0.0.1"),
     cuttlefish_unit:assert_config(Config, "dqe_idx_pg.pool.default.port",
@@ -413,3 +415,34 @@ extra_pool_config_test() ->
                                   {"127.0.0.1", 5432}),
     cuttlefish_unit:assert_config(Config, "dqe_idx_pg.pool.extra2.database",
                                   "extra_db").
+
+extra_pool_init_test() ->
+    Conf = [{["idx", "pg", "database"], "metric0"},
+            {["idx", "pg", "extra1", "database"], "metric1"},
+            {["idx", "pg", "extra1", "collections"], "col1"},
+            {["idx", "pg", "extra2", "database"], "metric2"},
+            {["idx", "pg", "extra2", "collections"], "col2"}],
+    Config = cuttlefish_unit:generate_config("priv/dqe_idx_pg.schema", Conf),
+    {ok, PoolConfig} = cuttlefish_unit:path(["dqe_idx_pg", "pool"], Config),
+
+    meck:new(application, [unstick]),
+    meck:new(pgapp, []),
+    meck:new(sql_migration, []),
+    meck:expect(application, get_env, fun(_, pool) -> {ok, PoolConfig} end),
+    meck:expect(pgapp, connect, fun(_, _) -> ok end),
+    meck:expect(sql_migration, run, fun(_, _) -> ok end),
+
+    init(),
+
+    ?assert(meck:called(pgapp, connect, [default, '_'])),
+    ?assert(meck:called(pgapp, connect, [extra1, '_'])),
+    ?assert(meck:called(pgapp, connect, [extra2, '_'])),
+    ?assert(meck:called(sql_migration, run, ['_', default])),
+    ?assert(meck:called(sql_migration, run, ['_', extra1])),
+    ?assert(meck:called(sql_migration, run, ['_', extra2])),
+    ?assertEqual([default, extra1, extra2], all_pg_pools()),
+    ?assertEqual(extra1, pg_pool(<<"col1">>)),
+    ?assertEqual(default, pg_pool(<<"unknown">>)),
+    meck:unload(application),
+    meck:unload(pgapp),
+    meck:unload(sql_migration).
