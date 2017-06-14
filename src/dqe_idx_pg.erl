@@ -3,13 +3,10 @@
 
 -include("dqe_idx_pg.hrl").
 
--ifdef(EUNIT).
 -include_lib("eunit/include/eunit.hrl").
--else.
 -compile([{nowarn_unused_function, [{defaut_pool_config_test,0},
                                     {extra_pool_config_test,0},
                                     {extra_pool_init_test,0}]}]).
--endif.
 
 %% API exports
 -export([
