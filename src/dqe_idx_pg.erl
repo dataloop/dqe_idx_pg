@@ -20,7 +20,7 @@
 
 -import(dqe_idx_pg_utils, [decode_ns/1, hstore_to_tags/1, kvpair_to_tag/1]).
 
--define(POOL_MAP_TAB, dqe_idx_pg_poolmap).
+-define(POOLMAP_TAB, dqe_idx_pg_poolmap).
 
 -define(TIMEOUT, 5 * 1000).
 
@@ -29,15 +29,22 @@
 %%====================================================================
 
 init() ->
-    ets:new(?POOL_MAP_TAB, [named_table]),
+    case ets:info(?POOLMAP_TAB) of
+        undefined ->
+            init_once();
+        _ ->
+            ok
+    end.
+
+init_once() ->
+    ets:new(?POOLMAP_TAB, [named_table]),
     {ok, PoolConfigs} = application:get_env(dqe_idx_pg, pool),
     [init_pool(Pool, Config) || {Pool, Config} <- PoolConfigs],
     ok.
 
 init_pool(Pool, Config) ->
     Opts = [size, max_overflow, database, username, password],
-    Opts1 = [{O, proplists:get_value(dqe_idx_pg, Config, undefined)}
-         || O <- Opts],
+    Opts1 = [{O, proplists:get_value(O, Config)} || O <- Opts],
     {Host, Port} = case proplists:get_value(server, Config) of
                        {H, P} ->
                            {H, P};
@@ -51,7 +58,7 @@ init_pool(Pool, Config) ->
     CollectionsProp = proplists:get_value(collections, Config, ""),
     Collections = string:tokens(CollectionsProp, ", "),
     Rows = [{list_to_binary(C), Pool} || C <- Collections],
-    ets:insert(?POOL_MAP_TAB, Rows),
+    ets:insert(?POOLMAP_TAB, Rows),
 
     sql_migration:run(dqe_idx_pg, Pool).
 
@@ -303,7 +310,7 @@ lookup_collection({in, Collection, _Metric, _Where}) ->
 pg_pool(Pool) when is_atom(Pool) ->
     Pool;
 pg_pool(Collection) ->
-    case ets:lookup(?POOL_MAP_TAB, Collection) of
+    case ets:lookup(?POOLMAP_TAB, Collection) of
         [{_Col, Pool}| _] ->
             Pool;
         [] ->
@@ -311,7 +318,7 @@ pg_pool(Collection) ->
     end.
 
 all_pg_pools() ->
-    Pools = [P || [P] <- ets:match(?POOL_MAP_TAB, {'_', '$1'})],
+    Pools = [P || [P] <- ets:match(?POOLMAP_TAB, {'_', '$1'})],
     Pools1 = [default | Pools],
     lists:usort(Pools1).
 
