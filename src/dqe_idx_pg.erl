@@ -223,7 +223,7 @@ strip_tpl(L) ->
 decode_ns_rows(Rows) ->
     [decode_ns(E) || {E} <- Rows].
 
-execute({select, Name, Collection, Q, Vs}) ->
+execute({select, Name, PoolOrCollection, Q, Vs}) ->
     T0 = erlang:system_time(),
     Pool = pg_pool(Collection),
     case pgapp:equery(Pool, Q, Vs, timeout()) of
@@ -234,7 +234,7 @@ execute({select, Name, Collection, Q, Vs}) ->
         E ->
             report_error(Name, Q, Vs, T0, E)
     end;
-execute({command, Name, Q, Vs}) ->
+execute({command, Name, PoolOrCollection, Q, Vs}) ->
     T0 = erlang:system_time(),
     Pool = pg_pool(Collection),
     case pgapp:equery(Pool, Q, Vs, timeout()) of
@@ -249,6 +249,29 @@ execute({command, Name, Q, Vs}) ->
         E ->
             report_error(Name, Q, Vs, T0, E)
     end.
+
+execute_all({select, Name, Q, Vs}) ->
+    lists:foldl(fun (Pool, {ok, AccRows}) ->
+                    case execute({select, Name, Pool, Q, Vs}) of
+                        {ok, Rows} ->
+                            {ok, AccRows ++ Rows};
+                        Err ->
+                            Err
+                    end;
+                    (_, Err) ->
+                        Err
+                end, {ok, []}, all_pg_pools());
+execute_all({command, Name, Q, Vs}) ->
+    lists:foldl(fun (Pool, {ok, AccCount, AccRows}) ->
+                    case execute({command, Name, Pool, Q, Vs}) of
+                        {ok, Count, Rows} ->
+                            {ok, AccCount + Count, AccRows ++ Rows};
+                        Err ->
+                            Err
+                    end;
+                    (_, Err) ->
+                        Err
+                end, {ok, 0, []}, all_pg_pools()).
 
 report_error(Name, Q, Vs, T0, E) ->
     lager:info("[dqe_idx:pg:~p] PG Query failed after ~pms: ~s <- ~p:"
@@ -281,6 +304,8 @@ lookup_collection({in, Collection, _Metric}) ->
 lookup_collection({in, Collection, _Metric, _Where}) ->
     Collection.
 
+pg_pool(Pool) when is_atom(Pool) ->
+    Pool;
 pg_pool(Collection) ->
     case ets:lookup(?POOL_MAP_TAB, Collection) of
         [{_Col, Pool}| _] ->
@@ -288,6 +313,10 @@ pg_pool(Collection) ->
         _ ->
             default
     end.
+
+all_pg_pools() ->
+    %TODO: implement me
+    [].
 
 defaut_pool_config_test() ->
     Conf = [{["idx", "pg", "backend"], "127.0.0.2:5432"}],
