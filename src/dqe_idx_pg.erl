@@ -38,13 +38,15 @@ init() ->
 
 lookup(Query, Start, Finish, _Opts) ->
     {ok, Q, Vs} = query_builder:lookup_query(Query, []),
-    {ok, Rows} = execute({select, "lookup/1", Q, Vs}),
+    Collection = lookup_collection(Query),
+    {ok, Rows} = execute({select, "lookup/1", Collection, Q, Vs}),
     Rows1 = [{B, K, [{Start, Finish, default}]} || {B, K} <- Rows],
     {ok, Rows1}.
 
 lookup(Query, Start, Finish, Groupings, _Opts) ->
     {ok, Q, Vs} = query_builder:lookup_query(Query, Groupings),
-    {ok, Rows} = execute({select, "lookup/2", Q, Vs}),
+    Collection = lookup_collection(Query),
+    {ok, Rows} = execute({select, "lookup/2", Collection, Q, Vs}),
     Rows1 = [{{Bucket, Key, [{Start, Finish, default}]},
               get_values(Groupings, Dimensions)} ||
                 {Bucket, Key, Dimensions} <- Rows],
@@ -52,56 +54,58 @@ lookup(Query, Start, Finish, Groupings, _Opts) ->
 
 lookup_tags(Query) ->
     {ok, Q, Vs} = query_builder:lookup_tags_query(Query),
-    {ok, Rows} = execute({select, "lookup_tags/1", Q, Vs}),
+    Collection = lookup_collection(Query),
+    {ok, Rows} = execute({select, "lookup_tags/1", Collection, Q, Vs}),
     R = [kvpair_to_tag(KV) || KV <- Rows],
     {ok, R}.
 
 collections() ->
     {ok, Q, Vs} = query_builder:collections_query(),
+    %% TODO: run across all known pools and combine results
     {ok, Rows} = execute({select, "collections/0", Q, Vs}),
     {ok, strip_tpl(Rows)}.
 
 metrics(Collection) ->
     {ok, Q, Vs} = query_builder:metrics_query(Collection),
-    {ok, Rows} = execute({select, "metrics/1", Q, Vs}),
+    {ok, Rows} = execute({select, "metrics/1", Collection, Q, Vs}),
     R = [M || {M} <- Rows],
     {ok, R}.
 
 metrics(Collection, Prefix, Depth) ->
     {ok, Q, Vs} = query_builder:metrics_query(Collection, Prefix, Depth),
-    {ok, Rows} = execute({select, "metrics/3", Q, Vs}),
+    {ok, Rows} = execute({select, "metrics/3", Collection, Q, Vs}),
     R = [M || {M} <- Rows],
     {ok, R}.
 
 namespaces(Collection) ->
     {ok, Q, Vs} = query_builder:namespaces_query(Collection),
-    {ok, Rows} = execute({select, "namespaces/1", Q, Vs}),
+    {ok, Rows} = execute({select, "namespaces/1", Collection, Q, Vs}),
     {ok, decode_ns_rows(Rows)}.
 
 namespaces(Collection, Metric) ->
     {ok, Q, Vs} = query_builder:namespaces_query(Collection, Metric),
-    {ok, Rows} = execute({select, "namespaces/2", Q, Vs}),
+    {ok, Rows} = execute({select, "namespaces/2", Collection, Q, Vs}),
     {ok, decode_ns_rows(Rows)}.
 
 tags(Collection, Namespace) ->
     {ok, Q, Vs} = query_builder:tags_query(Collection, Namespace),
-    {ok, Rows} = execute({select, "tags/2", Q, Vs}),
+    {ok, Rows} = execute({select, "tags/2", Collection, Q, Vs}),
     {ok, strip_tpl(Rows)}.
 
 tags(Collection, Metric, Namespace) ->
     {ok, Q, Vs} = query_builder:tags_query(Collection, Metric, Namespace),
-    {ok, Rows} = execute({select, "tags/3", Q, Vs}),
+    {ok, Rows} = execute({select, "tags/3", Collection, Q, Vs}),
     {ok, strip_tpl(Rows)}.
 
 values(Collection, Namespace, Tag) ->
     {ok, Q, Vs} = query_builder:values_query(Collection, Namespace, Tag),
-    {ok, Rows} = execute({select, "values/3", Q, Vs}),
+    {ok, Rows} = execute({select, "values/3", Collection, Q, Vs}),
     {ok, strip_tpl(Rows)}.
 
 values(Collection, Metric, Namespace, Tag) ->
     {ok, Q, Vs} = query_builder:values_query(Collection, Metric,
                                              Namespace, Tag),
-    {ok, Rows} = execute({select, "values/4", Q, Vs}),
+    {ok, Rows} = execute({select, "values/4", Collection, Q, Vs}),
     {ok, strip_tpl(Rows)}.
 
 expand(Bucket, []) when is_binary(Bucket) ->
@@ -111,6 +115,7 @@ expand(Bucket, Globs) when
       is_binary(Bucket),
       is_list(Globs) ->
     {ok, Q, Vs} = query_builder:glob_query(Bucket, Globs),
+    % TODO: run across all known pools and combine results
     {ok, Rows} = execute({select, "expand/2", Q, Vs}),
     Metrics = [M || {M} <- Rows],
     {ok, {Bucket, Metrics}}.
@@ -130,7 +135,7 @@ add(Collection, Metric, Bucket, Key) ->
 add(Collection, Metric, Bucket, Key, Tags) ->
     {ok, Q, Vs} = command_builder:add_metric(
                     Collection, Metric, Bucket, Key, Tags),
-    case execute({command, "add/5", Q, Vs}) of
+    case execute({command, "add/5", Collection, Q, Vs}) of
         {ok, 0, []} ->
             ok;
         {ok, _Count, [{Dims}]} ->
@@ -147,7 +152,7 @@ add(Collection, Metric, Bucket, Key, Tags) ->
 update(Collection, Metric, Bucket, Key, NVs) ->
     {ok, Q, Vs} = command_builder:update_tags(
                     Collection, Metric, Bucket, Key, NVs),
-    case execute({command, "update/5", Q, Vs}) of
+    case execute({command, "update/5", Collection, Q, Vs}) of
         {ok, 0, []} ->
             ok;
         {ok, _Count, [{Dims}]} ->
@@ -163,7 +168,7 @@ update(Collection, Metric, Bucket, Key, NVs) ->
 delete(Collection, Metric, Bucket, Key) ->
     {ok, Q, Vs} = command_builder:delete_metric(Collection, Metric,
                                                 Bucket, Key),
-    case execute({command, "delete/4", Q, Vs}) of
+    case execute({command, "delete/4", Collection, Q, Vs}) of
         {ok, _Count, _Rows} ->
             ok;
         E ->
@@ -178,7 +183,7 @@ delete(Collection, Metric, Bucket, Key) ->
 delete(Collection, Metric, Bucket, Key, Tags) ->
     {ok, Q, Vs} = command_builder:delete_tags(
                     Collection, Metric, Bucket, Key, Tags),
-    case execute({command, "delete/5", Q, Vs}) of
+    case execute({command, "delete/5", Collection, Q, Vs}) of
         {ok, _Count, _Rows} ->
             ok;
         E ->
@@ -198,9 +203,10 @@ strip_tpl(L) ->
 decode_ns_rows(Rows) ->
     [decode_ns(E) || {E} <- Rows].
 
-execute({select, Name, Q, Vs}) ->
+execute({select, Name, Collection, Q, Vs}) ->
     T0 = erlang:system_time(),
-    case pgapp:equery(Q, Vs, timeout()) of
+    Pool = pg_pool(Collection),
+    case pgapp:equery(Pool, Q, Vs, timeout()) of
         {ok, _Cols, Rows} ->
             lager:debug("[dqe_idx:pg:~p] PG Query took ~pms: ~s <- ~p",
                         [Name, tdelta(T0), Q, Vs]),
@@ -210,7 +216,8 @@ execute({select, Name, Q, Vs}) ->
     end;
 execute({command, Name, Q, Vs}) ->
     T0 = erlang:system_time(),
-    case pgapp:equery(Q, Vs, timeout()) of
+    Pool = pg_pool(Collection),
+    case pgapp:equery(Pool, Q, Vs, timeout()) of
         {ok, Count} ->
             lager:debug("[dqe_idx:pg:~p] PG Query took ~pms: ~s <- ~p",
                         [Name, tdelta(T0), Q, Vs]),
@@ -248,3 +255,14 @@ get_tag_value(TagKey, [_ | Rest]) ->
 
 timeout() ->
     application:get_env(dqe_idx_pg, timeout, ?TIMEOUT).
+
+lookup_collection({in, Collection, _Metric}) ->
+    Collection;
+lookup_collection({in, Collection, _Metric, _Where}) ->
+    Collection.
+
+%% TODO: implement alternate pools selection based on some config
+%%pg_pool(<<"">>) ->
+%%    
+pg_pool(_Collection) ->
+    default.
