@@ -2,43 +2,43 @@
 
 %% @doc The TCP endpoint for the backend server. Doesn't support hostnames.
 %% This setting overwrites backend_host and backend_port connections.
-{mapping, "idx.pg.backend", "dqe_idx_pg.server",
+{mapping, "idx.pg.backend", "dqe_idx_pg.pool",
   [{datatype, ip}]}.
 
 %% @doc The TCP hostname or IP for the backend server.
 %% Set this or backend_server.
-{mapping, "idx.pg.backend_host", "dqe_idx_pg.host",
+{mapping, "idx.pg.backend_host", "dqe_idx_pg.pool",
  [{default, "127.0.0.1"},
   {datatype, string}]}.
 
 %% @doc The TCP port for the backend server
 %% Set this or backend_server.
-{mapping, "idx.pg.backend_port", "dqe_idx_pg.port",
+{mapping, "idx.pg.backend_port", "dqe_idx_pg.pool",
  [{default, 5432},
   {datatype, integer}]}.
 
 %% @doc Initial number of conneciton pool workers
-{mapping, "idx.pg.size", "dqe_idx_pg.size",
+{mapping, "idx.pg.size", "dqe_idx_pg.pool",
  [{default, 20},
   {datatype, integer}]}.
 
 %% @doc Number of overflow connections - be careful with those!
-{mapping, "idx.pg.max_overflow", "dqe_idx_pg.max_overflow",
+{mapping, "idx.pg.max_overflow", "dqe_idx_pg.pool",
  [{default, 0},
   {datatype, integer}]}.
 
 %% @doc Initial number of conneciton pool workers
-{mapping, "idx.pg.database", "dqe_idx_pg.database",
+{mapping, "idx.pg.database", "dqe_idx_pg.pool",
  [{default, "metric_metadata"},
   {datatype, string}]}.
 
 %% @doc Username for the conection
-{mapping, "idx.pg.username", "dqe_idx_pg.username",
+{mapping, "idx.pg.username", "dqe_idx_pg.pool",
  [{default, "ddb"},
   {datatype, string}]}.
 
 %% @doc Password for the conection
-{mapping, "idx.pg.password", "dqe_idx_pg.password",
+{mapping, "idx.pg.password", "dqe_idx_pg.pool",
  [{default, "ddb"},
   {datatype, string}]}.
 
@@ -46,3 +46,68 @@
 {mapping, "idx.pg.timeout", "dqe_idx_pg.timeout",
  [{default, "5s"},
   {datatype, {duration, ms}}]}.
+
+%% @doc You can optionally declare additional postgres database connections.
+%% Connections other then default will be used for querying selectied collections.
+%% You need to provide them in coma separated list. Each database connection 
+%% accepts exactly the same keys as default one described above
+{mapping, "idx.pg.$pool.collections", "dqe_idx_pg.pool",
+ [{datatype, string},
+  {include_default, "secondary"},
+  {commented, "collection1, collection2"}]}.
+
+%% @see idx.pg.$pool.collections
+{mapping, "idx.pg.$pool.backend", "dqe_idx_pg.pool",
+ [{default, {"127.0.0.1", 5432}},
+  {datatype, ip},
+  {include_default, "secondary"},
+  {commented, "127.0.0.2:5432"}]}.
+
+{mapping, "idx.pg.$pool.size", "dqe_idx_pg.pool",
+ [{default, 20},
+  {datatype, integer},
+  hidden]}.
+
+{mapping, "idx.pg.$pool.max_overflow", "dqe_idx_pg.pool",
+ [{default, 0},
+  {datatype, integer},
+  hidden]}.
+
+{mapping, "idx.pg.$pool.database", "dqe_idx_pg.pool",
+ [{default, "metric_metadata"},
+  {datatype, string},
+  hidden]}.
+
+{mapping, "idx.pg.$pool.username", "dqe_idx_pg.pool",
+ [{default, "ddb"},
+  {datatype, string},
+  hidden]}.
+
+{mapping, "idx.pg.$pool.password", "dqe_idx_pg.pool",
+ [{default, "ddb"},
+  {datatype, string},
+  hidden]}.
+
+{translation,
+ "dqe_idx_pg.pool",
+ fun(Conf) ->
+         Name_to_atom = fun("backend") ->
+                                server;
+                           ("backend_host") ->
+                                host;
+                           ("backend_port") ->
+                                port;
+                           (Name) ->
+                                list_to_atom(Name)
+                        end,
+         Default = [{Name_to_atom(Name), V} || {["idx", "pg", Name], V} <- Conf],
+         PMap = lists:foldl(fun({["idx", "pg", PoolName, Name], Val}, Map) ->
+                                    Pool = list_to_atom(PoolName),
+                                    Opts = maps:get(Pool, Map, []),
+                                    Op = {Name_to_atom(Name), Val},
+                                    maps:put(Pool, [Op | Opts], Map);
+                               (_, Map) ->
+                                    Map
+                            end, #{default => Default}, Conf),
+         maps:to_list(PMap)
+ end}.

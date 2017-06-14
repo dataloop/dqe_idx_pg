@@ -1,6 +1,8 @@
 {"1.1.0",
-[{<<"dqe_idx">>,{pkg,<<"dqe_idx">>,<<"0.3.0">>},0},
+[{<<"cuttlefish">>,{pkg,<<"cuttlefish">>,<<"2.0.11">>},0},
+ {<<"dqe_idx">>,{pkg,<<"dqe_idx">>,<<"0.3.0">>},0},
  {<<"epgsql">>,{pkg,<<"epgsql">>,<<"3.3.0">>},1},
+ {<<"getopt">>,{pkg,<<"getopt">>,<<"0.8.2">>},1},
  {<<"goldrush">>,{pkg,<<"goldrush">>,<<"0.1.9">>},1},
  {<<"lager">>,{pkg,<<"lager">>,<<"3.2.4">>},0},
  {<<"pgapp">>,{pkg,<<"pgapp">>,<<"0.0.2">>},0},
@@ -8,8 +10,10 @@
  {<<"sqlmig">>,{pkg,<<"sqlmig">>,<<"0.1.4">>},0}]}.
 [
 {pkg_hash,[
+ {<<"cuttlefish">>, <<"D266AC68BA801803ACE4EF3DEC0FC419F184092E1882E19F7AFC29A6D4334E6A">>},
  {<<"dqe_idx">>, <<"EDCA91E5130C532D4B33AF678197ADC25AA4FA7471AC75033290F8AD8392874D">>},
  {<<"epgsql">>, <<"974A578340E52012CBAB820CE756E7ED1DF1BAF0110C59A6753D8337A2CF9454">>},
+ {<<"getopt">>, <<"B17556DB683000BA50370B16C0619DF1337E7AF7ECBF7D64FBF8D1D6BCE3109B">>},
  {<<"goldrush">>, <<"F06E5D5F1277DA5C413E84D5A2924174182FB108DABB39D5EC548B27424CD106">>},
  {<<"lager">>, <<"A6DEB74DAE7927F46BD13255268308EF03EB206EC784A94EAF7C1C0F3B811615">>},
  {<<"pgapp">>, <<"3E104BB777C8455D8B26D1538B67ABE0188EE97B1DF973FD936C2204CB316196">>},
